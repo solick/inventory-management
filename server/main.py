@@ -1,10 +1,31 @@
+import os
+from datetime import datetime, timedelta
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.staticfiles import StaticFiles
 from typing import List, Optional
 from pydantic import BaseModel
 from mock_data import inventory_items, orders, demand_forecasts, backlog_items, spending_summary, monthly_spending, category_spending, recent_transactions, purchase_orders
 
-app = FastAPI(title="Factory Inventory Management System")
+# Disable the default docs so we can serve Swagger UI assets locally (no CDN
+# dependency — keeps /docs working offline and behind restricted networks).
+app = FastAPI(title="Factory Inventory Management System", docs_url=None, redoc_url=None)
+
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+@app.get("/docs", include_in_schema=False)
+def custom_swagger_ui_html():
+    """Swagger UI served from locally bundled assets instead of a CDN."""
+    return get_swagger_ui_html(
+        openapi_url=app.openapi_url,
+        title=f"{app.title} - Swagger UI",
+        swagger_js_url="/static/swagger-ui-bundle.js",
+        swagger_css_url="/static/swagger-ui.css",
+    )
 
 # Quarter mapping for date filtering
 QUARTER_MAP = {
@@ -80,6 +101,9 @@ class Order(BaseModel):
     actual_delivery: Optional[str] = None
     warehouse: Optional[str] = None
     category: Optional[str] = None
+    # Marks orders created via the Restocking tab so the frontend can list them
+    # separately from the seed corpus (in the "Submitted Orders" section).
+    source: Optional[str] = None
 
 class DemandForecast(BaseModel):
     id: str
@@ -89,6 +113,7 @@ class DemandForecast(BaseModel):
     forecasted_demand: int
     trend: str
     period: str
+    unit_cost: float
 
 class BacklogItem(BaseModel):
     id: str
@@ -119,6 +144,11 @@ class CreatePurchaseOrderRequest(BaseModel):
     unit_cost: float
     expected_delivery_date: str
     notes: Optional[str] = None
+
+class CreateOrderRequest(BaseModel):
+    items: List[dict]                     # each: {sku, name, quantity, unit_price}
+    customer: Optional[str] = "Internal Restock"
+    lead_time_days: Optional[int] = 14
 
 # API endpoints
 @app.get("/")
@@ -152,6 +182,42 @@ def get_orders(
     filtered_orders = apply_filters(orders, warehouse, category, status)
     filtered_orders = filter_by_month(filtered_orders, month)
     return filtered_orders
+
+@app.post("/api/orders", response_model=Order)
+def create_order(request: CreateOrderRequest):
+    """Create a restocking order and append it to the in-memory orders list.
+
+    Data is in-memory only (no DB), so the order lives until server restart —
+    consistent with every other dataset in this demo.
+    """
+    # No ID generator exists; derive the next sequential id from the corpus.
+    next_id = str(max(int(o["id"]) for o in orders) + 1)
+    now = datetime.now()
+    lead_time_days = request.lead_time_days or 14
+
+    new_order = {
+        "id": next_id,
+        "order_number": f"ORD-2026-{int(next_id):04d}",
+        "customer": request.customer or "Internal Restock",
+        "items": request.items,
+        "status": "Processing",
+        "order_date": now.isoformat(timespec="seconds"),
+        "expected_delivery": (now + timedelta(days=lead_time_days)).isoformat(timespec="seconds"),
+        "total_value": round(sum(i["quantity"] * i["unit_price"] for i in request.items), 2),
+        "warehouse": None,
+        "category": None,
+        "source": "restock",
+    }
+    orders.append(new_order)
+    return new_order
+
+@app.get("/api/orders/submitted", response_model=List[Order])
+def get_submitted_orders():
+    """Return only restocking orders submitted at runtime (unfiltered).
+
+    Declared before /api/orders/{order_id} so 'submitted' is not captured as an id.
+    """
+    return [o for o in orders if o.get("source") == "restock"]
 
 @app.get("/api/orders/{order_id}", response_model=Order)
 def get_order(order_id: str):
