@@ -33,6 +33,18 @@ export const api = {
     return response.data
   },
 
+  // Submit a restocking order (created from the Restocking tab)
+  async createOrder(orderData) {
+    const response = await axios.post(`${API_BASE_URL}/orders`, orderData)
+    return response.data
+  },
+
+  // Runtime-submitted restocking orders, unaffected by the shared filters
+  async getSubmittedOrders() {
+    const response = await axios.get(`${API_BASE_URL}/orders/submitted`)
+    return response.data
+  },
+
   async getDemandForecasts() {
     const response = await axios.get(`${API_BASE_URL}/demand`)
     return response.data
