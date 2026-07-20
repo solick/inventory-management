@@ -1,10 +1,30 @@
+import os
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.staticfiles import StaticFiles
 from typing import List, Optional
 from pydantic import BaseModel
 from mock_data import inventory_items, orders, demand_forecasts, backlog_items, spending_summary, monthly_spending, category_spending, recent_transactions, purchase_orders
 
-app = FastAPI(title="Factory Inventory Management System")
+# Disable the default docs so we can serve Swagger UI assets locally (no CDN
+# dependency — keeps /docs working offline and behind restricted networks).
+app = FastAPI(title="Factory Inventory Management System", docs_url=None, redoc_url=None)
+
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+@app.get("/docs", include_in_schema=False)
+def custom_swagger_ui_html():
+    """Swagger UI served from locally bundled assets instead of a CDN."""
+    return get_swagger_ui_html(
+        openapi_url=app.openapi_url,
+        title=f"{app.title} - Swagger UI",
+        swagger_js_url="/static/swagger-ui-bundle.js",
+        swagger_css_url="/static/swagger-ui.css",
+    )
 
 # Quarter mapping for date filtering
 QUARTER_MAP = {
